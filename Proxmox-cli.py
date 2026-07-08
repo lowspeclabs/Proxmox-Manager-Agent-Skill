@@ -18,6 +18,7 @@ import os
 import pathlib
 import re
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -1172,6 +1173,9 @@ def cmd_lxc_create(args: argparse.Namespace, config: Config, client: ProxmoxClie
     vmid = str(args.vmid)
     endpoint = f"/nodes/{node}/lxc"
 
+    ssh_public_keys = getattr(args, "ssh_public_keys", None)
+    ssh_keygen_flag = getattr(args, "ssh_keygen", None)
+
     guard = require_execute(args, endpoint)
     if guard is not None:
         logger.log(
@@ -1186,13 +1190,37 @@ def cmd_lxc_create(args: argparse.Namespace, config: Config, client: ProxmoxClie
         print(render_output({"ok": guard.get("ok", True), "data": guard, "error": guard.get("error")}, args.format, title="Dry Run"))
         return EXIT_SAFETY if guard.get("ok") is False else EXIT_SUCCESS
 
+    if ssh_keygen_flag:
+        keygen_path = getattr(args, "ssh_key_path", None) or str(REPO_ROOT / f".lxc-ssh-key-{vmid}")
+        keygen_comment = f"lxc-{vmid}-{args.hostname}-opencode"
+        keypath = pathlib.Path(keygen_path)
+        keypath.parent.mkdir(parents=True, exist_ok=True)
+        if keypath.exists():
+            print(render_error_markdown("validation", f"SSH key already exists at {keypath}. Remove it or use --ssh-public-keys.", "", logger.file_path))
+            return EXIT_VALIDATION
+        try:
+            result = subprocess.run(
+                ["ssh-keygen", "-t", "ed25519", "-C", keygen_comment, "-f", str(keypath), "-N", ""],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                print(render_error_markdown("validation", f"ssh-keygen failed: {result.stderr}", "", logger.file_path))
+                return EXIT_INTERNAL
+        except FileNotFoundError:
+            print(render_error_markdown("validation", "ssh-keygen not found on this system", "", logger.file_path))
+            return EXIT_INTERNAL
+        pubkey_path = keypath.with_suffix(".pub")
+        ssh_public_keys = pubkey_path.read_text().strip()
+
+    features_val = getattr(args, "features", None)
     body: dict[str, Any] = {
         "vmid": vmid,
         "hostname": args.hostname,
         "ostemplate": args.ostemplate,
         "storage": args.storage,
-        "features": getattr(args, "features", "nesting=1") or "nesting=1",
     }
+    if features_val is not None:
+        body["features"] = features_val
     if getattr(args, "password", None):
         body["password"] = args.password
     if getattr(args, "cores", None) is not None:
@@ -1205,6 +1233,10 @@ def cmd_lxc_create(args: argparse.Namespace, config: Config, client: ProxmoxClie
         body["net0"] = args.net0
     if getattr(args, "rootfs", None):
         body["rootfs"] = args.rootfs
+
+    if ssh_public_keys:
+        body["ssh-public-keys"] = ssh_public_keys
+
     if getattr(args, "data", None):
         try:
             extra = json.loads(args.data)
@@ -1239,6 +1271,65 @@ def cmd_lxc_create(args: argparse.Namespace, config: Config, client: ProxmoxClie
         print()
         print(_lxc_console_fix_instructions(vmid))
     return _exit_code_for(resp)
+
+
+def cmd_lxc_ssh_keygen(args: argparse.Namespace, config: Config, client: ProxmoxClient, logger: Logger) -> int:
+    keyfile = args.keyfile or str(REPO_ROOT / ".lxc-ssh-key")
+    vmid_part = args.vmid if getattr(args, "vmid", None) else "default"
+    comment = args.comment or f"lxc-{vmid_part}-opencode"
+    keypath = pathlib.Path(keyfile)
+
+    if keypath.exists() and not args.force:
+        print(render_output({
+            "ok": False,
+            "data": {"keyfile": str(keypath)},
+            "error": f"Key file already exists at {keypath}. Use --force to overwrite."
+        }, args.format, title="SSH Key Generation"))
+        return EXIT_NOOP
+
+    keypath.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-C", comment, "-f", str(keypath), "-N", ""],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(render_output({
+                "ok": False,
+                "data": {"stderr": result.stderr},
+                "error": f"ssh-keygen failed (exit {result.returncode})",
+            }, args.format, title="SSH Key Generation"))
+            return EXIT_INTERNAL
+
+        pubkey_path = keypath.with_suffix(".pub")
+        pubkey = pubkey_path.read_text().strip()
+        privkey_path = keypath
+
+        print(render_output({
+            "ok": True,
+            "data": {
+                "private_key": str(privkey_path),
+                "public_key": str(pubkey_path),
+                "public_key_value": pubkey,
+                "comment": comment,
+            },
+        }, args.format, title="SSH Key Generated"))
+
+        logger.log(
+            event="ssh_keygen",
+            argv=sys.argv[1:],
+            extra={
+                "private_key": str(privkey_path),
+                "public_key": str(pubkey_path),
+            },
+        )
+        return EXIT_SUCCESS
+    except FileNotFoundError:
+        print(render_output({
+            "ok": False,
+            "error": "ssh-keygen not found on this system",
+        }, args.format, title="SSH Key Generation"))
+        return EXIT_INTERNAL
 
 
 def cmd_lxc_fix_console(args: argparse.Namespace, config: Config, client: ProxmoxClient, logger: Logger) -> int:
@@ -1943,17 +2034,26 @@ def build_parser() -> argparse.ArgumentParser:
     lxc_create.add_argument("--hostname", required=True, help="Container hostname")
     lxc_create.add_argument("--ostemplate", required=True, help="OS template")
     lxc_create.add_argument("--storage", required=True, help="Storage pool")
-    lxc_create.add_argument("--features", default="nesting=1", help="LXC features (default: nesting=1)")
+    lxc_create.add_argument("--features", default=None, help="LXC features (e.g., nesting=1). Omit to use default.")
     lxc_create.add_argument("--password", help="Root password")
     lxc_create.add_argument("--cores", type=int, help="Number of cores")
     lxc_create.add_argument("--memory", type=int, help="Memory in MB")
     lxc_create.add_argument("--swap", type=int, help="Swap in MB")
     lxc_create.add_argument("--net0", help="Network interface (e.g., name=eth0,bridge=vmbr0,ip=dhcp)")
     lxc_create.add_argument("--rootfs", help="Root filesystem (e.g., local-lvm:8)")
+    lxc_create.add_argument("--ssh-public-keys", help="SSH public key(s) to inject into the container")
+    lxc_create.add_argument("--ssh-keygen", action="store_true", help="Generate a new SSH key pair and inject the public key")
+    lxc_create.add_argument("--ssh-key-path", help="Path to save generated SSH key (default: ./.lxc-ssh-key-<VMID>)")
     lxc_create.add_argument("--data", help="JSON body for extra parameters")
     lxc_delete = _write_cmd(_add_node_vmid_args(lxc_sub.add_parser("delete", help="Delete LXC (requires --execute --force --confirm)")), destructive=True)
     lxc_fix_console = _cmd(_add_node_vmid_args(lxc_sub.add_parser("fix-console", help="Print Debian 13 LXC console workaround")))
     lxc_fix_console.add_argument("--ostemplate", help="OS template (if not stored in config)")
+
+    lxc_ssh_keygen = _cmd(lxc_sub.add_parser("ssh-keygen", help="Generate an SSH key pair for LXC access"))
+    lxc_ssh_keygen.add_argument("--vmid", type=int, help="LXC VMID to include in the key comment")
+    lxc_ssh_keygen.add_argument("--keyfile", help="Path to save the key (default: ./.lxc-ssh-key)")
+    lxc_ssh_keygen.add_argument("--comment", help="SSH key comment")
+    lxc_ssh_keygen.add_argument("--force", action="store_true", help="Overwrite existing key file")
 
     lxc_snapshot = lxc_sub.add_parser("snapshot", help="LXC snapshot commands")
     lxc_snapshot_sub = lxc_snapshot.add_subparsers(dest="snapshot_action", required=True)
@@ -2129,6 +2229,8 @@ def main(argv: list[str] | None = None) -> int:
                 return cmd_lxc_delete(args, config, client, logger)
             if action == "fix-console":
                 return cmd_lxc_fix_console(args, config, client, logger)
+            if action == "ssh-keygen":
+                return cmd_lxc_ssh_keygen(args, config, client, logger)
             if action == "snapshot":
                 snap_action = getattr(args, "snapshot_action", None)
                 if snap_action == "list":
