@@ -22,7 +22,6 @@ Direct Proxmox API calls are powerful, but they are easy for agents to misuse. T
 proxmox-opencode-lab/
 ├─ AGENTS.md
 ├─ README.md
-├─ spec.md
 ├─ .env.example
 ├─ scripts/
 │  ├─ Proxmox-cli.py
