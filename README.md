@@ -69,3 +69,7 @@ python scripts/Proxmox-cli.py vm stop --node pve1 --vmid 101 --execute --force -
 ## Safety Rule
 
 Read first. Dry-run second. Execute only after the intended node, VMID, endpoint, and action are clear.
+
+## Fix LXC Console 
+
+Sometime lxc console is broken when created using api, this bash script when ran from proxmox node the lxc is hosted on will fix that issue. 
