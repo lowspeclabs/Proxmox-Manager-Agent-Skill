@@ -74,6 +74,34 @@ python scripts/Proxmox-cli.py storage template-download --node pve1 --storage lo
 python scripts/Proxmox-cli.py lxc fix-console --node pve1 --vmid 109
 ```
 
+## LXC SSH Key Management
+
+Generate and inject SSH keys for LXC containers. Generated keys are stored on the machine running the CLI, not in the Proxmox API, and private keys are kept out of logs.
+
+```bash
+# Generate a new Ed25519 key pair for a specific container
+python scripts/Proxmox-cli.py lxc ssh-keygen --vmid 110 --keyfile ~/.ssh/lxc-110
+
+# Create an LXC container and inject an existing public key
+python scripts/Proxmox-cli.py lxc create --node pve1 --vmid 110 \
+  --hostname my-container \
+  --ostemplate local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
+  --storage local-lvm \
+  --ssh-public-keys "ssh-ed25519 AAAAC3... user@host"
+
+# Create an LXC container and generate + inject a fresh key on the fly
+python scripts/Proxmox-cli.py lxc create --node pve1 --vmid 110 \
+  --hostname my-container \
+  --ostemplate local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
+  --storage local-lvm \
+  --ssh-keygen --ssh-key-path ~/.ssh/lxc-110
+```
+
+Notes:
+- Debian/Ubuntu LXC templates typically disable root password SSH login, so key injection is the preferred way to access the container.
+- `--ssh-keygen` only writes files when `--execute` is used; in dry-run mode the container is not created and no key is generated.
+- The generated public key is placed in `~/.ssh/lxc-110.pub`; use `ssh -i ~/.ssh/lxc-110 root@<container-ip>` to connect.
+
 ## Write Command Rules
 
 State-changing commands must dry-run by default.
