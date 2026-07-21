@@ -1,6 +1,5 @@
-# proxmox-opencode-lab
-
-`proxmox-opencode-lab` is an agent-friendly CLI wrapper for managing a Proxmox VE lab through stable, logged, safety-guarded commands.
+# proxmox-manager
+`proxmox-manager` is an agent-friendly CLI wrapper for managing a Proxmox VE lab through stable, logged, safety-guarded commands.
 
 The project is designed for OpenCode-style agent harnesses and small local models that need to inspect or manage Proxmox without hand-writing brittle raw API calls every time.
 
@@ -19,7 +18,7 @@ Direct Proxmox API calls are powerful, but they are easy for agents to misuse. T
 ## Recommended Layout
 
 ```text
-proxmox-opencode-lab/
+proxmox-manager/
 ├─ AGENTS.md
 ├─ README.md
 ├─ spec.md
